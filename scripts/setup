@@ -1,0 +1,315 @@
+#!/usr/bin/env bash
+# Idempotent machine onboarding for agentkeep.
+#
+# Two axes (see identities.yaml + context/machines.md):
+#   - machine (context): slug, machines/<slug>/ dir, agent-profile wiring
+#   - identity (secrets): a named age key this machine uses to decrypt/encrypt
+#
+# Steps: deps -> machine slug + context + profiles -> identity (key store)
+#        -> registry + .sops.yaml recipient -> .machine.env -> optional cache.
+# Safe to re-run: each step checks state and only acts on what's missing.
+#
+#   scripts/setup [--machine SLUG] [--identity NAME] [--store file|keychain|se|yubikey]
+#                 [--cache] [--install] [--no-ingest] [--dry-run] [-h]
+#
+# See docs/key-stores.md (stores) and docs/secrets.md (workflow).
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo_root"
+# shellcheck source=lib/age-env.sh
+. "$repo_root/scripts/lib/age-env.sh"
+
+# --- options ------------------------------------------------------------------
+opt_machine=""; opt_identity=""; opt_store=""; opt_cache=0; opt_install=0; opt_ingest=1; DRY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --machine)  opt_machine="${2:-}"; shift 2 ;;
+    --identity) opt_identity="${2:-}"; shift 2 ;;
+    --store)    opt_store="${2:-}"; shift 2 ;;
+    --cache)    opt_cache=1; shift ;;
+    --install)  opt_install=1; shift ;;
+    --no-ingest) opt_ingest=0; shift ;;
+    --dry-run)  DRY=1; shift ;;
+    -h|--help)  sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "setup: unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+# --- helpers ------------------------------------------------------------------
+c_bold=$'\033[1m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
+say()  { printf '%s\n' "$*"; }
+step() { printf '\n%s==>%s %s\n' "$c_bold" "$c_off" "$*"; }
+ok()   { printf '  %s✓%s %s\n' "$c_dim" "$c_off" "$*"; }
+todo() { printf '  %s→%s %s\n' "$c_bold" "$c_off" "$*"; }
+run()  { if [ "$DRY" = 1 ]; then printf '  %s[dry-run]%s %s\n' "$c_dim" "$c_off" "$*"; else eval "$*"; fi; }
+is_tty() { [ -t 0 ] && [ -t 1 ]; }
+have()   { command -v "$1" >/dev/null 2>&1; }
+
+# Resolve the backend (store): explicit --store wins; else, if --identity names an
+# identity already in the registry, reuse its backend; else default to file.
+# Creating a NEW named identity requires an explicit --store (its backend can't be
+# guessed from a free-form name).
+store="$opt_store"
+identity_known=0
+if [ -n "$opt_identity" ] && [ -n "$(ac_registry_get "$opt_identity" recipient)" ]; then
+  identity_known=1
+  [ -n "$store" ] || store="$(ac_registry_get "$opt_identity" backend)"
+fi
+if [ -z "$store" ]; then
+  if [ -n "$opt_identity" ] && [ "$identity_known" = 0 ]; then
+    echo "setup: '$opt_identity' is not in the registry yet — add --store file|keychain|se|yubikey" >&2
+    exit 2
+  fi
+  store="file"
+fi
+case "$store" in file|keychain|se|yubikey) ;; *) echo "setup: bad --store $store" >&2; exit 2 ;; esac
+
+# --- 1. dependencies ----------------------------------------------------------
+step "Dependencies"
+deps=(sops age age-keygen yq)
+[ "$store" = se ] && deps+=(age-plugin-se)
+[ "$store" = yubikey ] && deps+=(age-plugin-yubikey)
+missing=()
+for d in "${deps[@]}"; do have "$d" && ok "$d" || missing+=("$d"); done
+if [ "${#missing[@]}" -gt 0 ]; then
+  if [ "$opt_install" = 1 ] && have brew; then
+    declare -A formula=([age-keygen]=age)
+    pkgs=(); for m in "${missing[@]}"; do pkgs+=("${formula[$m]:-$m}"); done
+    run "brew install $(printf '%s ' "${pkgs[@]}" | tr -s ' ' | sed 's/ $//')"
+  else
+    for m in "${missing[@]}"; do todo "missing: $m"; done
+    say "  install (macOS): ${c_bold}brew install sops age yq${c_off} (+ age-plugin-se / age-plugin-yubikey), or re-run with ${c_bold}--install${c_off}"
+    [ "$DRY" = 1 ] || exit 1
+  fi
+fi
+
+# --- 2. machine slug ----------------------------------------------------------
+step "Machine slug (context)"
+slug=""
+if [ -n "$opt_machine" ]; then slug="$opt_machine"
+elif [ -f "$repo_root/.machine" ]; then slug="$(sed -n '/[^[:space:]]/{s/^[[:space:]]*//;s/[[:space:]]*$//;p;q;}' "$repo_root/.machine")"
+fi
+if [ -z "$slug" ]; then
+  if is_tty; then
+    default_slug="$(uname -n | tr '[:upper:]' '[:lower:]' | sed 's/\.local$//; s/[^a-z0-9]\{1,\}/-/g; s/^-//; s/-$//')"
+    read -r -p "  machine slug [$default_slug]: " slug || true
+    slug="${slug:-$default_slug}"
+  else
+    echo "setup: no slug; pass --machine SLUG" >&2; exit 1
+  fi
+fi
+if [ ! -f "$repo_root/.machine" ] || [ "$(cat "$repo_root/.machine" 2>/dev/null)" != "$slug" ]; then
+  run "printf '%s\n' '$slug' > '$repo_root/.machine'"; ok "slug = $slug (wrote .machine)"
+else
+  ok "slug = $slug"
+fi
+
+# --- 3. machine context dir ---------------------------------------------------
+step "Machine context"
+mdir="$repo_root/machines/$slug"
+if [ -f "$mdir/AGENTS.md" ]; then ok "machines/$slug/AGENTS.md present"
+else
+  run "mkdir -p '$mdir'"
+  if [ "$DRY" != 1 ]; then
+    cat > "$mdir/AGENTS.md" <<EOF
+# Machine: $slug
+
+Thin router for context that should load **only on $slug**. Wired in via this
+machine's agent profile (see [[machines]]), not from the top-level \`AGENTS.md\`.
+Add a topic file beside this one and route to it below.
+
+@context.md
+EOF
+    cat > "$mdir/context.md" <<EOF
+# $slug — context
+
+Context specific to $slug (paths, tooling quirks, local services). Loaded only on
+this machine.
+EOF
+  fi
+  ok "created machines/$slug/{AGENTS.md,context.md}"
+fi
+
+# --- 4. ingest + rewire agent profiles ---------------------------------------
+step "Agent profiles"
+# Import paths are derived from where this repo actually lives, so agentkeep works
+# wherever it's cloned (no fixed ~/repos assumption). Collapse $HOME to ~ so the
+# committed-elsewhere profile line stays portable across machines with the same path.
+repo_disp="$repo_root"
+# Literal ~ is intentional: this string is written into the agent profile for
+# Claude/Codex to expand, not by this shell.
+# shellcheck disable=SC2088
+case "$repo_root" in "$HOME"/*) repo_disp="~/${repo_root#"$HOME"/}" ;; esac
+shared_import="@$repo_disp/AGENTS.md"
+machine_import="@$repo_disp/machines/$slug/AGENTS.md"
+ctx="$mdir/context.md"
+rewire_profile() {
+  local profile="$1" label="$2"
+  [ -e "$profile" ] || { todo "$label not found ($profile) — skipping"; return; }
+  local others
+  others="$(grep -vE '^[[:space:]]*@.*agentkeep' "$profile" | sed '/^[[:space:]]*$/d' || true)"
+  if [ -n "$others" ] && [ "$opt_ingest" = 1 ]; then
+    local marker="<!-- ingested from $label -->"
+    if grep -qF "$marker" "$ctx" 2>/dev/null; then
+      ok "$label: inline content already ingested"
+    elif [ "$DRY" = 1 ]; then
+      todo "$label: would ingest $(printf '%s' "$others" | grep -c . ) line(s) -> machines/$slug/context.md and rewire"
+    else
+      { printf '\n## Ingested from %s (%s)\n%s\n\n' "$label" "$(date +%F)" "$marker"
+        printf '%s\n' "$others"; } >> "$ctx"
+      cp "$profile" "$profile.bak"
+      printf '%s\n%s\n' "$shared_import" "$machine_import" > "$profile"
+      ok "$label: ingested -> machines/$slug/context.md ; rewired (backup $profile.bak)"
+    fi
+  else
+    local added=0
+    for imp in "$shared_import" "$machine_import"; do
+      if ! grep -qxF "$imp" "$profile" 2>/dev/null; then
+        if [ "$DRY" = 1 ]; then todo "$label: would add $imp"; else printf '%s\n' "$imp" >> "$profile"; fi
+        added=1
+      fi
+    done
+    if [ "$added" = 1 ]; then ok "$label: imports ensured"; else ok "$label: already wired"; fi
+  fi
+}
+# shellcheck disable=SC2088
+rewire_profile "$HOME/CLAUDE.md" "~/CLAUDE.md"
+# shellcheck disable=SC2088
+rewire_profile "$HOME/.codex/AGENTS.md" "~/.codex/AGENTS.md"
+
+# --- 5. identity (key store) --------------------------------------------------
+step "Identity"
+identity="${opt_identity:-${slug}-${store}}"
+age_dir="$(dirname "$(ac_default_age_key)")"
+stub="$age_dir/${identity}.txt"          # se/yubikey identity stub
+kc_service="agentkeep-${identity}"   # keychain item
+recipient=""
+store_src=""; [ "$identity_known" = 1 ] && [ -z "$opt_store" ] && store_src=" (from registry)"
+ok "identity = $identity ; store = $store$store_src"
+case "$store" in
+  file)
+    keyfile="$(ac_default_age_key)"
+    if [ -f "$keyfile" ]; then ok "key present: ${keyfile/#$HOME/~}"
+    else run "mkdir -p '$age_dir' && age-keygen -o '$keyfile' && chmod 600 '$keyfile'"; ok "generated $keyfile"; fi
+    [ -f "$keyfile" ] && recipient="$(age-keygen -y "$keyfile" 2>/dev/null || true)"
+    ;;
+  keychain)
+    if security find-generic-password -s "$kc_service" >/dev/null 2>&1; then
+      ok "key in keychain (item $kc_service)"
+      recipient="$(security find-generic-password -s "$kc_service" -w 2>/dev/null | base64 -d | age-keygen -y /dev/stdin 2>/dev/null || true)"
+    elif [ "$DRY" = 1 ]; then todo "generate a key and store it in keychain item $kc_service"
+    else
+      tmpk="$(umask 077; mktemp)"; age-keygen -o "$tmpk" 2>/dev/null
+      security add-generic-password -U -s "$kc_service" -a "$USER" -w "$(base64 < "$tmpk" | tr -d '\n')"
+      recipient="$(age-keygen -y "$tmpk")"; rm -f "$tmpk"
+      ok "generated + stored key in keychain item $kc_service"
+    fi
+    ;;
+  se|yubikey)
+    plugin="age-plugin-$store"
+    if [ -f "$stub" ]; then ok "identity stub present: ${stub/#$HOME/~}"
+    else
+      run "mkdir -p '$age_dir'"
+      if [ "$store" = se ]; then
+        todo "generate Secure Enclave identity (Touch ID), then re-run:"
+        say  "      ${c_bold}$plugin keygen --access-control=any-biometry -o '$stub'${c_off}"
+      else
+        todo "generate/export YubiKey identity (PIN/touch), then re-run:"
+        say  "      ${c_bold}$plugin --generate --slot 1 --touch-policy cached${c_off}  then  ${c_bold}$plugin --identity --slot 1 > '$stub'${c_off}"
+        say  "      (slot 1 = a PIV retired slot — leaves 9a/9c and GPG untouched)"
+      fi
+    fi
+    [ -f "$stub" ] && recipient="$(grep -oE 'age1[0-9a-z]+' "$stub" | head -1 || true)"
+    ;;
+esac
+[ -n "$recipient" ] && ok "recipient: $recipient"
+
+# --- 6. registry + .sops.yaml -------------------------------------------------
+step "Registry + .sops.yaml"
+portable=false; { [ "$store" = yubikey ]; } && portable=true
+if [ -z "$recipient" ]; then
+  todo "recipient unknown yet — generate the identity above, then re-run"
+else
+  if grep -qF "$recipient" "$repo_root/identities.yaml"; then ok "identity in registry (identities.yaml)"
+  else
+    todo "add to identities.yaml under \`identities:\`:"
+    say  "      ${c_dim}${identity}:${c_off}"
+    say  "      ${c_dim}  recipient: $recipient${c_off}"
+    say  "      ${c_dim}  backend: $store${c_off}"
+    say  "      ${c_dim}  portable: $portable${c_off}"
+    [ "$portable" = false ] && say "      ${c_dim}  host: $slug${c_off}"
+  fi
+  if grep -qF "$recipient" "$repo_root/.sops.yaml"; then
+    ok "recipient in .sops.yaml"
+    if [ "$DRY" != 1 ] && "$repo_root/scripts/secret-get" EXAMPLE_API_TOKEN >/dev/null 2>&1; then
+      ok "this machine can decrypt shared secrets"
+    fi
+  else
+    todo "add recipient to .sops.yaml (the one place we touch recipients):"
+    say  "      1) this machine's bundle rule (encrypt-to-all opted-in), above the shared catch-all:"
+    say  "         ${c_dim}- path_regex: secrets/machines/${slug}\\.ya?ml\$  ->  age: [ ..., $recipient ]${c_off}"
+    say  "      2) the shared rule's age: list:  ${c_dim}- $recipient  # $identity${c_off}"
+    say  "      then commit/push, ${c_bold}scripts/secret-rekey${c_off} on a machine that can decrypt, push, re-run setup."
+  fi
+fi
+
+# --- 7. .machine.env (AGE_IDENTITIES) ----------------------------------------
+step "Local config (.machine.env)"
+envf="$repo_root/.machine.env"
+existing=""
+[ -f "$envf" ] && existing="$(sed -n 's/^AGE_IDENTITIES=//p' "$envf" | tr -d '"' | head -1)"
+[ -n "$existing" ] || existing="${slug}-file"
+idlist="$existing"
+case " $idlist " in *" $identity "*) ;; *) idlist="$idlist $identity" ;; esac
+idlist="$(printf '%s' "$idlist" | tr -s ' ' | sed 's/^ //; s/ $//')"
+[ "$opt_cache" = 1 ] && AGE_CACHE=1
+# default state (single <slug>-file identity, no cache) needs no file
+if [ "$idlist" = "${slug}-file" ] && [ "${AGE_CACHE:-0}" != 1 ]; then
+  if [ -f "$envf" ]; then ok ".machine.env present (kept)"; else ok "defaults (just ${slug}-file, no cache) — no .machine.env needed"; fi
+else
+  newenv="$(
+    printf '# agentkeep per-machine config (gitignored). Managed by scripts/setup.\n'
+    printf 'AGE_IDENTITIES="%s"\n' "$idlist"
+    [ "${AGE_CACHE:-0}" = 1 ] && printf 'AGE_CACHE=1\n'
+    [ "${AGE_CACHE:-0}" = 1 ] && printf 'AGE_CACHE_KEYCHAIN=%s\n' "${AGE_CACHE_KEYCHAIN:-agentkeep}"
+  )"
+  if [ "$DRY" = 1 ]; then todo "write .machine.env (AGE_IDENTITIES=\"$idlist\", cache=${AGE_CACHE:-0})"
+  elif [ -f "$envf" ] && [ "$(cat "$envf")" = "$newenv" ]; then ok ".machine.env up to date"
+  else printf '%s\n' "$newenv" > "$envf"; ok "wrote .machine.env (AGE_IDENTITIES=\"$idlist\")"; fi
+fi
+
+# --- 8. session cache ---------------------------------------------------------
+step "Session cache"
+cache_kc="${AGE_CACHE_KEYCHAIN:-login}"
+if [ "${AGE_CACHE:-0}" != 1 ]; then
+  ok "cache disabled (enable with --cache)"
+elif [ "$(uname -s)" != Darwin ]; then
+  todo "session cache is macOS-only; skipping"
+elif [ "$cache_kc" = login ] || [ -z "$cache_kc" ]; then
+  ok "cache uses the login keychain (no separate passphrase; rides on your macOS login)"
+else
+  cache_kc_path="$HOME/Library/Keychains/${cache_kc}.keychain-db"
+  if [ -f "$cache_kc_path" ]; then ok "dedicated cache keychain exists: $cache_kc"
+  elif [ "$DRY" = 1 ]; then todo "create dedicated cache keychain $cache_kc (you set its passphrase = re-login unlock)"
+  else
+    say "  creating dedicated cache keychain '$cache_kc' — choose a passphrase (your re-login unlock):"
+    security create-keychain "$cache_kc_path"
+    security set-keychain-settings -lu -t 3600 "$cache_kc_path"
+    ok "dedicated cache keychain created (locks on sleep/logout and after 1h idle)"
+  fi
+fi
+
+# --- 9. verify + summary ------------------------------------------------------
+step "Verify"
+ok "machine-id -> $("$repo_root/scripts/machine-id")"
+if [ "$DRY" != 1 ] && "$repo_root/scripts/secret-get" EXAMPLE_API_TOKEN >/dev/null 2>&1; then
+  ok "secret-get (shared) works"
+else
+  todo "secret-get not verified (new machine not yet rekeyed, or hardware identity pending)"
+fi
+
+step "Done"
+say "machine=$slug  identity=$identity  store=$store  cache=${AGE_CACHE:-0}"
+say "Next: review machines/$slug/context.md; run scripts/identities; commit & push (per AGENTS.md)."
+[ "$DRY" = 1 ] && say "${c_dim}(dry-run: nothing was changed)${c_off}"

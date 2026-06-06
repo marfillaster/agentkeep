@@ -1,0 +1,15 @@
+# Never commit plaintext secret dumps or private age keys.
+*.decrypted
+*.plaintext
+.env
+.env.*
+!.env.example
+keys.txt
+*.key
+
+# Per-machine identity marker (names the local machine; varies per machine).
+/.machine
+# Per-machine local config (key store + cache selection). Varies per machine.
+/.machine.env
+# Backup of an agent profile made by scripts/setup before rewiring.
+*.bak

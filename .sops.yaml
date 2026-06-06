@@ -1,0 +1,40 @@
+# SOPS configuration — age recipients that can decrypt secrets/*.yaml
+#
+# Each list entry under `age:` is an *identity* public recipient (age1...). An
+# identity is an age keypair, named in identities.yaml; its private half lives in
+# whatever backend that machine chose (file / Keychain / Secure Enclave / YubiKey)
+# and is NEVER committed. Recipients are backend-agnostic — only the age1... string
+# matters to SOPS. Identities are independent of machines: a host-bound key lives
+# on one host; a portable YubiKey works on any host. See identities.yaml +
+# docs/key-stores.md. Keep this file's recipients in sync with identities.yaml
+# (`scripts/identities` warns on drift); `scripts/setup` maintains both.
+#
+# Two tiers (rules are matched top-to-bottom, FIRST match wins — isolated rules
+# before the shared catch-all):
+#   - secrets/machines/<slug>.yaml : a machine's private bundle, encrypted to the
+#                                    SET of identities that machine opted into
+#                                    (read by whichever device is present).
+#   - secrets/secrets.yaml         : shared — encrypted to every identity.
+# An identity's recipient appears in the shared rule and in each bundle it belongs
+# to. `scripts/setup --identity` adds a recipient to the right rules + rekeys.
+#
+# Secret inventory (keys in secrets/secrets.yaml). Every value is an
+# environment-variable secret, and each key IS the env var name it populates.
+# If a key ever needs a different env var name, note the mapping here — SOPS does
+# not preserve comments inside the encrypted secrets file, so this is the place.
+#
+#   EXAMPLE_API_TOKEN
+#
+# The recipients below are PLACEHOLDERS. Run `scripts/setup` to generate a real
+# identity; it prints the exact age1... lines to drop in here, then rekeys.
+creation_rules:
+  # --- per-machine bundles: encrypted to that machine's opted-in identities ---
+  - path_regex: secrets/machines/laptop\.ya?ml$
+    age:
+      - age1example0000000000000000000000000000000000000000000000000000     # laptop-file
+      - age1yubikey1example00000000000000000000000000000000000000000000000  # yubikey-5c (portable)
+  # --- shared (all identities) — keep last so it only catches secrets/secrets.yaml ---
+  - path_regex: secrets/.*\.ya?ml$
+    age:
+      - age1example0000000000000000000000000000000000000000000000000000     # laptop-file
+      - age1yubikey1example00000000000000000000000000000000000000000000000  # yubikey-5c (portable)

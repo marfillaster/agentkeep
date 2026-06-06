@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Print the canonical slug for the current machine.
+#
+# Resolution order (first hit wins):
+#   1. $AGENT_CONTEXT_MACHINE      explicit override
+#   2. repo-root .machine          per-machine marker (gitignored)
+#   3. normalized `uname -n`        hostname fallback
+#
+# The slug names the machine's context dir (machines/<slug>/) and its isolated
+# secret file (secrets/machines/<slug>.yaml). Hostnames often don't match the
+# canonical slug used in .sops.yaml, so the .machine marker is the reliable path;
+# seed it once per machine (e.g. printf 'laptop\n' > .machine).
+set -euo pipefail
+
+if [ -n "${AGENT_CONTEXT_MACHINE:-}" ]; then
+  printf '%s\n' "$AGENT_CONTEXT_MACHINE"
+  exit 0
+fi
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+marker="$repo_root/.machine"
+
+if [ -f "$marker" ]; then
+  slug="$(sed -n '/[^[:space:]]/{s/^[[:space:]]*//;s/[[:space:]]*$//;p;q;}' "$marker")"
+  if [ -n "$slug" ]; then
+    printf '%s\n' "$slug"
+    exit 0
+  fi
+fi
+
+uname -n | tr '[:upper:]' '[:lower:]' | sed 's/\.local$//; s/[^a-z0-9]\{1,\}/-/g; s/^-//; s/-$//'

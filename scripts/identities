@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# List age identities from the registry (identities.yaml) and check that the
+# registry agrees with .sops.yaml. An identity is a keypair = a recipient; a
+# machine uses one or more (its .machine.env AGE_IDENTITIES).
+#
+#   scripts/identities         # list + drift check
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/age-env.sh
+. "$repo_root/scripts/lib/age-env.sh"
+ac_load_config
+
+reg="$(ac_registry)"
+[ -f "$reg" ] || { echo "identities: registry not found: $reg" >&2; exit 1; }
+mine=" ${AGE_IDENTITIES:-} "
+
+printf 'Identities (registry: %s):\n' "${reg#"$repo_root"/}"
+names="$(yq -e '.identities | keys | .[]' "$reg" 2>/dev/null || true)"
+while IFS= read -r name; do
+  [ -n "$name" ] || continue
+  recip="$(yq ".identities.\"$name\".recipient // \"\"" "$reg")"
+  backend="$(yq ".identities.\"$name\".backend // \"?\"" "$reg")"
+  portable="$(yq ".identities.\"$name\".portable // false" "$reg")"
+  used=" "; case "$mine" in *" $name "*) used="*" ;; esac
+  printf '  %s %-22s %-9s portable=%-5s %s\n' "$used" "$name" "$backend" "$portable" "$recip"
+done <<< "$names"
+printf '  (* = used by this machine via .machine.env AGE_IDENTITIES)\n\n'
+
+printf 'Drift check (registry vs .sops.yaml):\n'
+reg_recips="$(yq -e '.identities[].recipient' "$reg" 2>/dev/null | sort -u)"
+sops_recips="$(grep -oE 'age1[0-9a-z]+' "$repo_root/.sops.yaml" | sort -u)"
+only_reg="$(comm -23 <(printf '%s\n' "$reg_recips") <(printf '%s\n' "$sops_recips"))"
+only_sops="$(comm -13 <(printf '%s\n' "$reg_recips") <(printf '%s\n' "$sops_recips"))"
+status=0
+# word-splitting of the recipient lists is intentional (one per line)
+# shellcheck disable=SC2086
+if [ -n "$only_reg" ]; then echo "  ! in registry but NOT in .sops.yaml:"; printf '      %s\n' $only_reg; status=1; fi
+# shellcheck disable=SC2086
+if [ -n "$only_sops" ]; then echo "  ! in .sops.yaml but NOT in registry:"; printf '      %s\n' $only_sops; status=1; fi
+[ "$status" = 0 ] && echo "  ok — registry and .sops.yaml agree"
+exit "$status"

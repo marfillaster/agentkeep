@@ -1,0 +1,32 @@
+# Identity registry (public — NO secrets here, only public recipients + metadata).
+#
+# An *identity* is an age keypair = a recipient. It is the unit for secrets: who
+# can decrypt. It is independent of any *machine* (a host) — a host-bound key
+# (file/keychain/se) lives on one machine, a portable key (yubikey) works on any
+# machine where it's plugged in. A machine declares which identities it uses in
+# its gitignored .machine.env (AGE_IDENTITIES="name1 name2", primary first).
+#
+# This registry maps identity name -> recipient + backend, so tooling and humans
+# know the full set. The same recipient strings appear in .sops.yaml (which SOPS
+# reads standalone); `scripts/identities` warns if the two drift. Edit via
+# `scripts/setup --identity NAME --store BACKEND`; machine *context* is separate
+# (machines/<slug>/, keyed by `scripts/machine-id`).
+#
+# Naming: host-bound = <host>-<backend> ; portable = a free name (e.g. yubikey-5c).
+# backend: file | keychain | se | yubikey.  portable: true only for yubikey.
+#
+# This file ships empty. Running `scripts/setup` generates your first identity and
+# prints the exact block to add here. An entry looks like the commented example:
+
+identities: {}
+  # laptop-file:
+  #   recipient: age1example0000000000000000000000000000000000000000000000000000
+  #   backend: file
+  #   portable: false
+  #   host: laptop
+  #
+  # yubikey-5c:
+  #   recipient: age1yubikey1example00000000000000000000000000000000000000000000000
+  #   backend: yubikey
+  #   portable: true
+  #   note: portable token, PIV slot 1, pin=once touch=cached
