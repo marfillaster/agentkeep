@@ -25,11 +25,11 @@ lives under `machines/<slug>/` and is loaded only on that machine.
   `machines/<slug>/` (router + `context.md`), **ingests** any inline content already
   in `~/CLAUDE.md` / `~/.codex/AGENTS.md` into `machines/<slug>/context.md` (backing
   up the profile), and ensures both `@`-imports are present. It also sets up the key
-  store ([[secrets]], `docs/key-stores.md`). Re-running is safe. Then commit & push
-  the repo changes (per [[meta]]); the profiles live outside the repo.
+  store ([secrets](secrets.md), `docs/key-stores.md`). Re-running is safe. Then commit & push
+  the repo changes (per [meta](meta.md)); the profiles live outside the repo.
 
 **Machine vs identity** — `machines/<slug>/` is purely *context*. Secrets are keyed
-by *identity* (an age key, decoupled from any host — see [[secrets]]). A machine's
+by *identity* (an age key, decoupled from any host — see [secrets](secrets.md)). A machine's
 private bundle `secrets/machines/<slug>.yaml` is encrypted to the **set of
 identities that machine opted into** (`.machine.env` `AGE_IDENTITIES`), so it's
 readable by whichever of its keys is present (e.g. local Keychain or a portable

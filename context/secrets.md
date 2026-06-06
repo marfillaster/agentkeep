@@ -12,7 +12,7 @@ Secrets live encrypted in `secrets/secrets.yaml` (SOPS + age). Rules for all age
 
 ## Identities vs machines
 
-An **identity** is an age keypair (a recipient) — the unit for secrets. A **machine** is a host — the unit for context ([[machines]]). They're independent: a host-bound key (file/Keychain/Secure Enclave) lives on one host; a portable YubiKey works on any host. Identities are listed in the public registry `identities.yaml` (`scripts/identities` lists them + checks `.sops.yaml` drift). A machine declares the identities it uses in the gitignored `.machine.env` (`AGE_IDENTITIES="name1 name2"`, primary first); `scripts/secret-get` resolves them via `scripts/lib/age-env.sh`, trying non-hardware keys first so reads don't trigger needless Touch ID / YubiKey prompts. Key store + cache: see `docs/key-stores.md`.
+An **identity** is an age keypair (a recipient) — the unit for secrets. A **machine** is a host — the unit for context ([machines](machines.md)). They're independent: a host-bound key (file/Keychain/Secure Enclave) lives on one host; a portable YubiKey works on any host. Identities are listed in the public registry `identities.yaml` (`scripts/identities` lists them + checks `.sops.yaml` drift). A machine declares the identities it uses in the gitignored `.machine.env` (`AGE_IDENTITIES="name1 name2"`, primary first); `scripts/secret-get` resolves them via `scripts/lib/age-env.sh`, trying non-hardware keys first so reads don't trigger needless Touch ID / YubiKey prompts. Key store + cache: see `docs/key-stores.md`.
 
 ## Per-machine private bundle
 
