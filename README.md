@@ -38,14 +38,20 @@ To add a preference: drop it in the relevant `context/*.md` (or create a new top
 file + add one `@` line to `AGENTS.md`), then commit and push so other machines stay
 in sync.
 
-## Wiring (per machine)
+## Getting started
 
-Clone the repo anywhere, then run setup:
+This is a GitHub **template repository**. Click **Use this template ▸ Create a new
+repository** to make your own copy (public or private) under your account — that
+becomes *your* single source of truth. Then clone it anywhere and run setup:
 
 ```sh
-git clone https://github.com/marfillaster/agentkeep.git
-cd agentkeep && scripts/setup            # add --store/--cache as desired
+git clone https://github.com/<you>/<your-repo>.git
+cd <your-repo> && scripts/setup          # add --store/--cache as desired
 ```
+
+> Just kicking the tires? Clone this repo directly instead:
+> `git clone https://github.com/marfillaster/agentkeep.git`. To make it yours
+> later, repoint `origin` at your own remote (or start over from the template).
 
 `scripts/setup` is idempotent — it seeds the machine slug, provisions the key
 store, ensures the recipient/cache, creates `machines/<slug>/`, and wires the
