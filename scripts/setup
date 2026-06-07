@@ -12,7 +12,14 @@
 #   scripts/setup [--machine SLUG] [--identity NAME] [--store file|keychain|se|yubikey]
 #                 [--cache] [--install] [--no-ingest] [--dry-run] [-h]
 #
-# See docs/key-stores.md (stores) and docs/secrets.md (workflow).
+# Retire an identity (the reverse of onboarding) — drop it from identities.yaml +
+# .sops.yaml, rekey the secrets this machine can decrypt, and unwire it locally:
+#
+#   scripts/setup --remove NAME [--purge-key] [--dry-run]
+#
+# --purge-key also deletes this machine's local key material for NAME (Keychain
+# item / SE|YubiKey stub / dedicated file key); the shared default keys.txt is
+# never touched. See docs/key-stores.md (stores) and docs/secrets.md (workflow).
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,6 +29,7 @@ cd "$repo_root"
 
 # --- options ------------------------------------------------------------------
 opt_machine=""; opt_identity=""; opt_store=""; opt_cache=0; opt_install=0; opt_ingest=1; DRY=0
+opt_remove=""; opt_purge=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --machine)  opt_machine="${2:-}"; shift 2 ;;
@@ -30,8 +38,10 @@ while [ $# -gt 0 ]; do
     --cache)    opt_cache=1; shift ;;
     --install)  opt_install=1; shift ;;
     --no-ingest) opt_ingest=0; shift ;;
+    --remove)   opt_remove="${2:-}"; shift 2 ;;
+    --purge-key) opt_purge=1; shift ;;
     --dry-run)  DRY=1; shift ;;
-    -h|--help)  sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "setup: unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -45,6 +55,172 @@ todo() { printf '  %s→%s %s\n' "$c_bold" "$c_off" "$*"; }
 run()  { if [ "$DRY" = 1 ]; then printf '  %s[dry-run]%s %s\n' "$c_dim" "$c_off" "$*"; else eval "$*"; fi; }
 is_tty() { [ -t 0 ] && [ -t 1 ]; }
 have()   { command -v "$1" >/dev/null 2>&1; }
+
+# --- removal mode: retire an identity (full retirement + rekey) ---------------
+# The reverse of onboarding: drop NAME from the registry + .sops.yaml, rekey the
+# files this machine can decrypt to the reduced recipient set, unwire it from
+# .machine.env, and (with --purge-key) delete this machine's local key material.
+# Runs as its own mode and exits — none of the onboarding steps below apply.
+if [ -n "$opt_remove" ]; then
+  name="$opt_remove"
+  reg="$repo_root/identities.yaml"
+  sops_f="$repo_root/.sops.yaml"
+
+  miss=0
+  for d in yq sops age; do have "$d" || { todo "missing dependency: $d"; miss=1; }; done
+  [ "$miss" = 1 ] && { say "  install (macOS): ${c_bold}brew install sops age yq${c_off}"; exit 1; }
+
+  # Capture everything we need from the registry NOW — step 1 deletes the entry,
+  # so a later lookup (e.g. for key-material purge) would come back empty.
+  recipient="$(ac_registry_get "$name" recipient)"
+  backend="$(ac_registry_get "$name" backend)"
+  regfile="$(ac_registry_get "$name" file)"
+  if [ -z "$recipient" ]; then
+    echo "setup --remove: '$name' is not in the registry ($reg)" >&2
+    echo "  known identities: $(yq -r '.identities | keys | join(", ")' "$reg" 2>/dev/null)" >&2
+    exit 2
+  fi
+  step "Retire identity: $name"
+  ok "recipient: $recipient"
+  ok "backend:   ${backend:-?}"
+
+  # Safety 1 — never orphan a secrets file: refuse if dropping this recipient
+  # would leave any .sops.yaml rule with an empty age: list (encrypted to no one).
+  # env(r) is mikefarah yq's variable form (this repo's yq is not jq). A yq error
+  # must abort, not be swallowed — a silent pass here could destroy the secrets.
+  if ! emptied="$(r="$recipient" yq '
+      .creation_rules[] | select(.age != null)
+      | select((.age | map(select(. != env(r))) | length) == 0) | .path_regex' \
+      "$sops_f" 2>/dev/null)"; then
+    echo "setup --remove: failed to analyze $sops_f — aborting." >&2; exit 1
+  fi
+  if [ -n "$emptied" ]; then
+    echo "setup --remove: refusing — removing $name would leave these rules with no recipients:" >&2
+    # shellcheck disable=SC2086  # one path_regex per line — splitting is intended
+    printf '    %s\n' $emptied >&2
+    echo "  add another recipient there first (scripts/setup --identity ...), or drop the rule." >&2
+    exit 1
+  fi
+
+  # Safety 2 — this machine must be able to decrypt now, or the rekey can't run.
+  ac_load_config
+  if [ "$DRY" != 1 ] && ! "$repo_root/scripts/secret-get" EXAMPLE_API_TOKEN >/dev/null 2>&1; then
+    echo "setup --remove: this machine can't currently decrypt shared secrets, so it can't rekey." >&2
+    echo "  run --remove on a machine that can decrypt, or fix this machine's key first." >&2
+    exit 1
+  fi
+
+  # Warn if this strips this machine's only identity (it would lose all access).
+  # shellcheck disable=SC2086  # AGE_IDENTITIES is a space-separated list — split it
+  remaining="$( { printf '%s\n' ${AGE_IDENTITIES:-} | grep -vx "$name" || true; } | tr '\n' ' ' | sed 's/^ *//; s/ *$//')"
+  if [ -z "$remaining" ]; then
+    todo "WARNING: $name is this machine's only identity — after removal this machine"
+    todo "         can no longer decrypt secrets (other machines/identities are unaffected)."
+    if is_tty && [ "$DRY" != 1 ]; then
+      read -r -p "  proceed anyway? [y/N]: " ans || true
+      case "$ans" in y|Y|yes|YES) ;; *) echo "Aborted." >&2; exit 1 ;; esac
+    fi
+  fi
+
+  # 1. registry: delete the identity's block (comment-preserving, minimal diff —
+  #    yq would reflow the surrounding comments).
+  step "Registry (identities.yaml)"
+  if grep -qE "^  ${name}:[[:space:]]*$" "$reg"; then
+    if [ "$DRY" = 1 ]; then todo "would delete '$name' block from identities.yaml"
+    else
+      awk -v n="$name" '
+        $0 ~ "^  " n ":[[:space:]]*$" { skip=1; next }
+        skip && /^    / { next }                 # 4-space child line -> drop
+        skip && /^[[:space:]]*$/ { next }         # blank within/after block -> drop
+        skip { skip=0 }                           # sibling/dedent -> stop, keep
+        { print }
+      ' "$reg" > "$reg.tmp" && mv "$reg.tmp" "$reg"
+      ok "removed '$name' from identities.yaml"
+    fi
+  else
+    ok "'$name' not present in identities.yaml (already gone)"
+  fi
+
+  # 2. .sops.yaml: drop the recipient from every age: list (all rules). Anchored
+  #    line match keeps the surrounding aligned comments intact.
+  step ".sops.yaml recipients"
+  if grep -qF "$recipient" "$sops_f"; then
+    if [ "$DRY" = 1 ]; then todo "would remove recipient lines for $name from .sops.yaml"
+    else
+      grep -vE "^[[:space:]]*-[[:space:]]+${recipient}([[:space:]#].*)?$" "$sops_f" > "$sops_f.tmp" \
+        && mv "$sops_f.tmp" "$sops_f"
+      ok "removed recipient from .sops.yaml age: lists"
+    fi
+  else
+    ok "recipient not in .sops.yaml (already gone)"
+  fi
+
+  # 3. rekey shared + this machine's bundle to the reduced recipient set. The old
+  #    ciphertext is still decryptable here (NAME's key + .machine.env are intact
+  #    until step 4), so updatekeys can re-encrypt without it.
+  step "Rekey"
+  if [ "$DRY" = 1 ]; then todo "would run scripts/secret-rekey --yes"
+  elif "$repo_root/scripts/secret-rekey" --yes; then ok "rekeyed to the reduced recipient set"
+  else todo "rekey failed — resolve the cause, then re-run scripts/secret-rekey"; fi
+
+  # 4. unwire from this machine's .machine.env AGE_IDENTITIES.
+  step "Local config (.machine.env)"
+  envf="$repo_root/.machine.env"
+  if [ -f "$envf" ] && grep -q '^AGE_IDENTITIES=' "$envf"; then
+    cur="$(sed -n 's/^AGE_IDENTITIES=//p' "$envf" | tr -d '"' | head -1)"
+    # shellcheck disable=SC2086  # AGE_IDENTITIES is a space-separated list — split it
+    new="$( { printf '%s\n' $cur | grep -vx "$name" || true; } | tr '\n' ' ' | sed 's/^ *//; s/ *$//')"
+    if [ "$cur" = "$new" ]; then ok "$name not in AGE_IDENTITIES (nothing to do)"
+    elif [ "$DRY" = 1 ]; then todo "would set AGE_IDENTITIES=\"$new\""
+    else
+      sed -i.bak "s|^AGE_IDENTITIES=.*|AGE_IDENTITIES=\"$new\"|" "$envf" && rm -f "$envf.bak"
+      ok "AGE_IDENTITIES=\"$new\""
+    fi
+  else
+    ok ".machine.env has no AGE_IDENTITIES (nothing to do)"
+  fi
+
+  # 5. local key material — only with --purge-key; never the shared default keys.txt.
+  step "Local key material"
+  age_dir="$(dirname "$(ac_default_age_key)")"
+  case "$backend" in
+    keychain)
+      kc_service="agentkeep-${name}"
+      if security find-generic-password -s "$kc_service" >/dev/null 2>&1; then
+        if [ "$opt_purge" = 1 ] && [ "$DRY" != 1 ]; then
+          security delete-generic-password -s "$kc_service" >/dev/null 2>&1 && ok "deleted keychain item $kc_service"
+        else todo "keychain item present: $kc_service (delete with --purge-key)"; fi
+      else ok "no keychain item for $name"; fi
+      ;;
+    se|yubikey)
+      stub="$age_dir/${name}.txt"; [ -n "$regfile" ] && stub="${regfile/#\~/$HOME}"
+      if [ -f "$stub" ]; then
+        if [ "$opt_purge" = 1 ] && [ "$DRY" != 1 ]; then rm -f "$stub" && ok "deleted stub ${stub/#$HOME/~}"
+        else todo "identity stub present: ${stub/#$HOME/~} (delete with --purge-key; the key itself stays on the $backend)"; fi
+      else ok "no stub for $name"; fi
+      ;;
+    file|*)
+      default_key="$(ac_default_age_key)"
+      keyfile="$default_key"; [ -n "$regfile" ] && keyfile="${regfile/#\~/$HOME}"
+      if [ -n "$regfile" ] && [ "$keyfile" != "$default_key" ] && [ -f "$keyfile" ]; then
+        if [ "$opt_purge" = 1 ] && [ "$DRY" != 1 ]; then rm -f "$keyfile" && ok "deleted key file ${keyfile/#$HOME/~}"
+        else todo "dedicated key file: ${keyfile/#$HOME/~} (delete with --purge-key)"; fi
+      else
+        todo "file key lives in the shared default keys.txt — NOT auto-deleted (other identities may share it)"
+        todo "old ciphertext in git history stays decryptable by this key — rotate the secret values (scripts/secret-edit)"
+      fi
+      ;;
+  esac
+
+  # 6. drift check + summary.
+  step "Verify"
+  "$repo_root/scripts/identities" || true
+  step "Done"
+  say "Retired $name. Review the diff, then commit & push (per AGENTS.md)."
+  [ "$backend" = file ] && say "${c_bold}Reminder:${c_off} a plaintext file key can still decrypt old ciphertext in git history — rotate the secret values."
+  [ "$DRY" = 1 ] && say "${c_dim}(dry-run: nothing was changed)${c_off}"
+  exit 0
+fi
 
 # Resolve the backend (store): explicit --store wins; else, if --identity names an
 # identity already in the registry, reuse its backend; else default to file.
