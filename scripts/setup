@@ -103,8 +103,11 @@ if [ -n "$opt_remove" ]; then
   fi
 
   # Safety 2 — this machine must be able to decrypt now, or the rekey can't run.
+  # Probe the shared file itself (ac_decrypt_file), not a named key: a real fork's
+  # secrets won't contain the template's EXAMPLE_API_TOKEN, so a key-name probe
+  # would false-abort even when the machine can decrypt fine.
   ac_load_config
-  if [ "$DRY" != 1 ] && ! "$repo_root/scripts/secret-get" EXAMPLE_API_TOKEN >/dev/null 2>&1; then
+  if [ "$DRY" != 1 ] && ! ac_decrypt_file "$repo_root/secrets/secrets.yaml" >/dev/null 2>&1; then
     echo "setup --remove: this machine can't currently decrypt shared secrets, so it can't rekey." >&2
     echo "  run --remove on a machine that can decrypt, or fix this machine's key first." >&2
     exit 1
