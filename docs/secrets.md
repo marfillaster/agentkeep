@@ -140,12 +140,38 @@ Use this flow when bootstrapping a new machine that cannot decrypt
    scripts/secret-get EXAMPLE_API_TOKEN >/dev/null
    ```
 
+## Retire an identity
+
+The reverse of onboarding. Run it on a machine that can currently decrypt (it has
+to rekey):
+
+```bash
+scripts/setup --remove NAME              # drop identity NAME, rekey, unwire it
+scripts/setup --remove NAME --purge-key  # also delete this machine's local key material
+scripts/setup --remove NAME --dry-run    # preview without changing anything
+```
+
+It removes `NAME` from `identities.yaml` and from every `age:` list in
+`.sops.yaml`, runs `scripts/secret-rekey --yes` (re-encrypting the shared file and
+this machine's bundle to the reduced recipient set), and drops `NAME` from this
+machine's `.machine.env`. Guardrails: it refuses if `NAME` is unknown, or if
+removing it would leave any `.sops.yaml` rule with **no** recipients (an
+undecryptable file), and warns if `NAME` is this machine's only identity. With
+`--purge-key` it also deletes the local key material — the Keychain item, the
+SE/YubiKey stub, or a *dedicated* file key; it never touches the shared default
+`keys.txt`. Review the diff, then commit & push.
+
+If the retired key was a plaintext `file` key, the old ciphertext in git history
+stays decryptable by it — **rotate the secret values** (see "Rotate a compromised
+machine" below).
+
 ## Rekey existing secrets
 
 After any change to the recipient list in `.sops.yaml`:
 
 ```bash
-scripts/secret-rekey   # = sops updatekeys secrets/secrets.yaml
+scripts/secret-rekey        # = sops updatekeys secrets/secrets.yaml (prompts to confirm)
+scripts/secret-rekey --yes  # -y: don't prompt (used by setup --remove)
 ```
 
 This re-wraps the data key for the current recipients **without** changing the secret values.

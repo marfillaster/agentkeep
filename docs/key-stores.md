@@ -84,10 +84,13 @@ of them. To add one:
 3. `scripts/secret-rekey` on a machine that can decrypt → re-encrypts to the full
    opted-in set; push.
 4. Verify: `scripts/secret-get EXAMPLE_API_TOKEN >/dev/null`.
-5. To *retire* the old identity: remove its recipient from `.sops.yaml` +
-   `identities.yaml`, `scripts/secret-rekey`, push. If the old key was a plaintext
-   `file` key it remains in git history — **rotate the secret values**
-   (`scripts/secret-edit`); see "Rotate a compromised machine" in `docs/secrets.md`.
+5. To *retire* the old identity, let `scripts/setup --remove NAME` do the reverse
+   of onboarding — it drops the recipient from `.sops.yaml` + `identities.yaml`,
+   rekeys the files this machine can decrypt, and unwires it from `.machine.env`
+   (add `--purge-key` to also delete this machine's local key material). If the
+   old key was a plaintext `file` key it remains in git history — **rotate the
+   secret values** (`scripts/secret-edit`); see "Rotate a compromised machine" in
+   `docs/secrets.md`.
 
 ### Portable YubiKey across machines
 
