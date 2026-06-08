@@ -313,16 +313,18 @@ fi
 # --- 4. ingest + rewire agent profiles ---------------------------------------
 step "Agent profiles"
 # Import paths are derived from where this repo actually lives, so agentkeep works
-# wherever it's cloned (no fixed ~/repos assumption). Collapse $HOME to ~ so the
-# committed-elsewhere profile line stays portable across machines with the same path.
-repo_disp="$repo_root"
-# Literal ~ is intentional: this string is written into the agent profile for
-# Claude/Codex to expand, not by this shell.
-# shellcheck disable=SC2088
-case "$repo_root" in "$HOME"/*) repo_disp="~/${repo_root#"$HOME"/}" ;; esac
-shared_import="@$repo_disp/AGENTS.md"
-machine_import="@$repo_disp/machines/$slug/AGENTS.md"
+# wherever it's cloned (no fixed ~/repos assumption). Keep them absolute so the
+# same profile content is visible in app settings and in agent startup context.
+shared_import="@$repo_root/AGENTS.md"
+machine_import="@$repo_root/machines/$slug/AGENTS.md"
 ctx="$mdir/context.md"
+write_profile_imports() {
+  local profile="$1" others="$2"
+  {
+    [ -z "$others" ] || printf '%s\n' "$others"
+    printf '%s\n%s\n' "$shared_import" "$machine_import"
+  } > "$profile"
+}
 rewire_profile() {
   local profile="$1" label="$2"
   [ -e "$profile" ] || { todo "$label not found ($profile) — skipping"; return; }
@@ -338,18 +340,23 @@ rewire_profile() {
       { printf '\n## Ingested from %s (%s)\n%s\n\n' "$label" "$(date +%F)" "$marker"
         printf '%s\n' "$others"; } >> "$ctx"
       cp "$profile" "$profile.bak"
-      printf '%s\n%s\n' "$shared_import" "$machine_import" > "$profile"
+      write_profile_imports "$profile" ""
       ok "$label: ingested -> machines/$slug/context.md ; rewired (backup $profile.bak)"
     fi
   else
-    local added=0
-    for imp in "$shared_import" "$machine_import"; do
-      if ! grep -qxF "$imp" "$profile" 2>/dev/null; then
-        if [ "$DRY" = 1 ]; then todo "$label: would add $imp"; else printf '%s\n' "$imp" >> "$profile"; fi
-        added=1
+    local wanted current
+    wanted="$(printf '%s\n%s\n' "$shared_import" "$machine_import")"
+    current="$(grep -E '^[[:space:]]*@.*agentkeep' "$profile" | sed '/^[[:space:]]*$/d' || true)"
+    if [ "$current" != "$wanted" ]; then
+      if [ "$DRY" = 1 ]; then
+        todo "$label: would normalize agentkeep imports"
+      else
+        write_profile_imports "$profile" "$others"
       fi
-    done
-    if [ "$added" = 1 ]; then ok "$label: imports ensured"; else ok "$label: already wired"; fi
+      ok "$label: imports ensured"
+    else
+      ok "$label: already wired"
+    fi
   fi
 }
 # shellcheck disable=SC2088
