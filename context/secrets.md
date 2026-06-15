@@ -7,6 +7,7 @@ Secrets live encrypted in `secrets/secrets.yaml` (SOPS + age). Rules for all age
 - **Never commit decrypted output.** No `sops -d > file`, no `.decrypted`/`.plaintext`/`.env` files. `.gitignore` guards these — don't override it.
 - **Never modify `.sops.yaml` recipients or `identities.yaml`** (add/remove identities) unless explicitly asked — use `scripts/setup --identity`, which is the asked-for path.
 - **Edit secrets only via `scripts/secret-edit`** (opens SOPS, re-encrypts on save). Never hand-edit the ciphertext.
+- **A `pre-commit` hook guards against plaintext leaks** (installed by `scripts/setup` via `core.hooksPath=scripts/hooks`): it refuses to commit a staged `secrets/*.yaml` that isn't SOPS-encrypted — catching an accidental `sops -d > secrets/secrets.yaml` or a hand-created plaintext file. It inspects the staged blob, needs no age key, and never prompts. Bypass with `git commit --no-verify` only when you mean to.
 - **After any recipient change**, run `scripts/secret-rekey` so files re-encrypt to the current recipient set.
 - **Onboard / repair a machine with `scripts/setup`** (idempotent): deps, slug, context dir, profile rewiring, identity/key store, registry + recipient, optional cache. Don't hand-do those steps.
 

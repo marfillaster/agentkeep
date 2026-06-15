@@ -486,6 +486,23 @@ else
   fi
 fi
 
+# --- 8b. git hooks ------------------------------------------------------------
+step "Git hooks"
+if ! have git || [ ! -d "$repo_root/.git" ]; then
+  todo "not a git checkout; skipping hook install"
+else
+  want="scripts/hooks"
+  cur="$(git -C "$repo_root" config --local --get core.hooksPath 2>/dev/null || true)"
+  if [ "$cur" = "$want" ]; then
+    ok "core.hooksPath -> $want (pre-commit guard active)"
+  elif [ -n "$cur" ]; then
+    todo "core.hooksPath is '$cur' (not '$want'); leaving as-is — set manually if intended"
+  else
+    run "git -C '$repo_root' config --local core.hooksPath '$want'"
+    ok "core.hooksPath -> $want (pre-commit: plaintext-leak + inventory guard)"
+  fi
+fi
+
 # --- 9. verify + summary ------------------------------------------------------
 step "Verify"
 ok "machine-id -> $("$repo_root/scripts/machine-id")"
