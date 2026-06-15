@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# pre-commit guard for this secrets repo. Installed per-clone by scripts/setup
+# via `git config core.hooksPath scripts/hooks` (so it travels with the repo
+# instead of living unversioned in .git/hooks).
+#
+# Plaintext-leak guard: refuse to commit any staged secrets/*.yaml that isn't
+# SOPS-encrypted — e.g. an accidental `sops -d > secrets/secrets.yaml` or a
+# hand-created plaintext file. It inspects the STAGED blob (not the working tree)
+# and needs no age key, so it always runs and never prompts.
+#
+# Bypass in a pinch with `git commit --no-verify`.
+set -euo pipefail
+
+staged="$(git diff --cached --name-only --diff-filter=ACM)"
+fail=0
+
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  case "$f" in
+    *.example) continue ;;
+    secrets/*.yaml|secrets/*.yml)   # case '*' spans '/', so this covers nested bundles too
+      if ! git show ":$f" | grep -q 'ENC\[AES256_GCM'; then
+        echo "pre-commit: $f is staged but not SOPS-encrypted — refusing (plaintext leak?)." >&2
+        echo "            Edit via scripts/secret-edit; never commit decrypted output." >&2
+        fail=1
+      fi ;;
+  esac
+done <<EOF
+$staged
+EOF
+
+exit "$fail"
