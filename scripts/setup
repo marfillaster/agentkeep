@@ -414,29 +414,54 @@ esac
 # --- 6. registry + .sops.yaml -------------------------------------------------
 step "Registry + .sops.yaml"
 portable=false; { [ "$store" = yubikey ]; } && portable=true
+reg="$repo_root/identities.yaml"
+sops_f="$repo_root/.sops.yaml"
 if [ -z "$recipient" ]; then
   todo "recipient unknown yet — generate the identity above, then re-run"
 else
-  if grep -qF "$recipient" "$repo_root/identities.yaml"; then ok "identity in registry (identities.yaml)"
+  if grep -qF "$recipient" "$reg"; then
+    ok "identity in registry (identities.yaml)"
+  elif [ "$DRY" = 1 ]; then
+    todo "would add $identity to identities.yaml"
   else
-    todo "add to identities.yaml under \`identities:\`:"
-    say  "      ${c_dim}${identity}:${c_off}"
-    say  "      ${c_dim}  recipient: $recipient${c_off}"
-    say  "      ${c_dim}  backend: $store${c_off}"
-    say  "      ${c_dim}  portable: $portable${c_off}"
-    [ "$portable" = false ] && say "      ${c_dim}  host: $slug${c_off}"
+    {
+      printf '\n  %s:\n' "$identity"
+      printf '    recipient: %s\n' "$recipient"
+      printf '    backend: %s\n' "$store"
+      printf '    portable: %s\n' "$portable"
+      [ "$portable" = false ] && printf '    host: %s\n' "$slug"
+    } >> "$reg"
+    ok "added $identity to identities.yaml"
   fi
-  if grep -qF "$recipient" "$repo_root/.sops.yaml"; then
+  if grep -qF "$recipient" "$sops_f"; then
     ok "recipient in .sops.yaml"
     if [ "$DRY" != 1 ] && "$repo_root/scripts/secret-get" EXAMPLE_API_TOKEN >/dev/null 2>&1; then
       ok "this machine can decrypt shared secrets"
     fi
+  elif [ "$DRY" = 1 ]; then
+    todo "would add $identity to .sops.yaml (bundle rule + shared catch-all)"
   else
-    todo "add recipient to .sops.yaml (the one place we touch recipients):"
-    say  "      1) this machine's bundle rule (encrypt-to-all opted-in), above the shared catch-all:"
-    say  "         ${c_dim}- path_regex: secrets/machines/${slug}\\.ya?ml\$  ->  age: [ ..., $recipient ]${c_off}"
-    say  "      2) the shared rule's age: list:  ${c_dim}- $recipient  # $identity${c_off}"
-    say  "      then commit/push, ${c_bold}scripts/secret-rekey${c_off} on a machine that can decrypt, push, re-run setup."
+    # Insert bundle rule for this machine's private bundle before the shared catch-all.
+    # The shared catch-all comment line is the anchor; fall back to appending before it
+    # if the comment is absent (non-template .sops.yaml).
+    if grep -qE '^  # --- shared' "$sops_f"; then
+      awk -v slug="$slug" -v r="$recipient" -v id="$identity" '
+        /^  # --- shared/ {
+          print "  - path_regex: secrets/machines/" slug "\\.ya?ml$"
+          print "    age:"
+          print "      - " r "  # " id
+          print ""
+        }
+        { print }
+      ' "$sops_f" > "$sops_f.tmp" && mv "$sops_f.tmp" "$sops_f"
+    else
+      printf '  - path_regex: secrets/machines/%s\\.ya?ml$\n    age:\n      - %s  # %s\n\n' \
+        "$slug" "$recipient" "$identity" >> "$sops_f"
+    fi
+    # Append to the shared catch-all rule's age list (always last in the file).
+    printf '      - %s  # %s\n' "$recipient" "$identity" >> "$sops_f"
+    ok "added $identity to .sops.yaml (bundle rule + shared rule)"
+    todo "commit/push, then run ${c_bold}scripts/secret-rekey${c_off} on a machine that can already decrypt, and push again"
   fi
 fi
 
