@@ -424,6 +424,13 @@ else
   elif [ "$DRY" = 1 ]; then
     todo "would add $identity to identities.yaml"
   else
+    # The template ships `identities: {}` as a placeholder for the very first
+    # identity (an inline, already-closed empty mapping) -- appending indented
+    # children below it would be orphaned, unparseable YAML, not a child of
+    # `identities:`. Open the block first when that placeholder is still there.
+    if grep -qxF 'identities: {}' "$reg"; then
+      sed -i.bak 's/^identities: {}$/identities:/' "$reg" && rm -f "$reg.bak"
+    fi
     {
       printf '\n  %s:\n' "$identity"
       printf '    recipient: %s\n' "$recipient"
@@ -441,10 +448,28 @@ else
   elif [ "$DRY" = 1 ]; then
     todo "would add $identity to .sops.yaml (bundle rule + shared catch-all)"
   else
-    # Insert bundle rule for this machine's private bundle before the shared catch-all.
-    # The shared catch-all comment line is the anchor; fall back to appending before it
-    # if the comment is absent (non-template .sops.yaml).
-    if grep -qE '^  # --- shared' "$sops_f"; then
+    # This machine's bundle rule may already exist (a prior identity for the same
+    # slug, e.g. adding a YubiKey alongside an existing file key) — path_regex
+    # rules match top-to-bottom, first match wins, so a *second* rule for the same
+    # slug would silently shadow this identity instead of granting it access. Append
+    # into the existing rule's age: list when present; only create a new rule block
+    # when this slug has none yet.
+    bundle_anchor="  - path_regex: secrets/machines/${slug}\\.ya?ml\$"
+    if grep -qF "$bundle_anchor" "$sops_f"; then
+      # ENVIRON, not -v: awk's -v assignment processes backslash escapes in the
+      # value, which would silently strip the \. in bundle_anchor and break the
+      # exact-line match below.
+      anchor="$bundle_anchor" r="$recipient" id="$identity" awk '
+        $0 == ENVIRON["anchor"] { print; in_block=1; next }
+        in_block && (/^    age:/ || /^      - /) { print; next }
+        in_block { print "      - " ENVIRON["r"] "  # " ENVIRON["id"]; in_block=0 }
+        { print }
+        END { if (in_block) print "      - " ENVIRON["r"] "  # " ENVIRON["id"] }
+      ' "$sops_f" > "$sops_f.tmp" && mv "$sops_f.tmp" "$sops_f"
+    # Insert a new bundle rule before the shared catch-all. The shared catch-all
+    # comment line is the anchor; fall back to appending before it if the comment
+    # is absent (non-template .sops.yaml).
+    elif grep -qE '^  # --- shared' "$sops_f"; then
       awk -v slug="$slug" -v r="$recipient" -v id="$identity" '
         /^  # --- shared/ {
           print "  - path_regex: secrets/machines/" slug "\\.ya?ml$"
@@ -470,7 +495,18 @@ step "Local config (.machine.env)"
 envf="$repo_root/.machine.env"
 existing=""
 [ -f "$envf" ] && existing="$(sed -n 's/^AGE_IDENTITIES=//p' "$envf" | tr -d '"' | head -1)"
-[ -n "$existing" ] || existing="${slug}-file"
+# No .machine.env yet (first setup on this machine): only assume the "<slug>-file"
+# default identity if it's a DIFFERENT, already-registered identity — not a blind
+# guess. Otherwise this run's $identity (often "<slug>-file" itself; see step 5) is
+# the only identity that actually exists yet, and seeding the guess anyway created
+# a phantom second entry with no real key behind it whenever --identity named
+# something else on a brand-new machine.
+if [ -z "$existing" ]; then
+  default_id="${slug}-file"
+  if [ "$default_id" != "$identity" ] && [ -n "$(ac_registry_get "$default_id" recipient)" ]; then
+    existing="$default_id"
+  fi
+fi
 idlist="$existing"
 case " $idlist " in *" $identity "*) ;; *) idlist="$idlist $identity" ;; esac
 idlist="$(printf '%s' "$idlist" | tr -s ' ' | sed 's/^ //; s/ $//')"
@@ -482,8 +518,15 @@ else
   newenv="$(
     printf '# agentkeep per-machine config (gitignored). Managed by scripts/setup.\n'
     printf 'AGE_IDENTITIES="%s"\n' "$idlist"
-    [ "${AGE_CACHE:-0}" = 1 ] && printf 'AGE_CACHE=1\n'
-    [ "${AGE_CACHE:-0}" = 1 ] && printf 'AGE_CACHE_KEYCHAIN=%s\n' "${AGE_CACHE_KEYCHAIN:-agentkeep}"
+    # Plain if, not [ cond ] && printf: inside $( ), under set -e a bare
+    # assignment takes the exit status of the command substitution, so a false
+    # last command here (AGE_CACHE unset, the common no-cache path) would abort
+    # the whole script. (No apostrophes in comments inside a $( ) block -- one
+    # here confuses the bash parser quote scanner and eats the rest of the file.)
+    if [ "${AGE_CACHE:-0}" = 1 ]; then
+      printf 'AGE_CACHE=1\n'
+      printf 'AGE_CACHE_KEYCHAIN=%s\n' "${AGE_CACHE_KEYCHAIN:-agentkeep}"
+    fi
   )"
   if [ "$DRY" = 1 ]; then todo "write .machine.env (AGE_IDENTITIES=\"$idlist\", cache=${AGE_CACHE:-0})"
   elif [ -f "$envf" ] && [ "$(cat "$envf")" = "$newenv" ]; then ok ".machine.env up to date"
@@ -540,4 +583,7 @@ fi
 step "Done"
 say "machine=$slug  identity=$identity  store=$store  cache=${AGE_CACHE:-0}"
 say "Next: review machines/$slug/context.md; run scripts/identities; commit & push (per AGENTS.md)."
-[ "$DRY" = 1 ] && say "${c_dim}(dry-run: nothing was changed)${c_off}"
+# Plain if, not [ cond ] && say: this is the last statement in the script, so
+# a false condition here (the common non-dry-run case) would leave the whole
+# run exiting 1 despite succeeding.
+if [ "$DRY" = 1 ]; then say "${c_dim}(dry-run: nothing was changed)${c_off}"; fi
