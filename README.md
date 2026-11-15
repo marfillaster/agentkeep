@@ -7,8 +7,9 @@ agent's profile imports it instead of holding its own copy.
 It's a **template** — clone it, run `scripts/setup`, and make it yours. Two
 subsystems ship together:
 
-- **Context router** — a thin `AGENTS.md` that `@`-imports one file per topic from
-  `context/`, plus per-machine context under `machines/<slug>/` loaded only on that
+- **Context router** — a thin `AGENTS.md` that `@`-imports one router-sized file per
+  topic from `context/` (full topic bodies live in `context/ref/` and are read on
+  demand), plus per-machine context under `machines/<slug>/` loaded only on that
   machine.
 - **Secrets** — SOPS + age encrypted secrets you can commit, read through
   `scripts/secret-get`, with multi-identity support and per-machine private bundles.
@@ -18,8 +19,9 @@ subsystems ship together:
 | File | Purpose |
 | --- | --- |
 | `AGENTS.md` | Thin **router** — one `@` import per topic, no inline content. |
-| `context/*.md` | One file per topic (the actual context). Add a file, route to it from `AGENTS.md`. |
-| `machines/<slug>/` | Per-machine context, loaded **only** on that machine via its agent profile (thin router + topic files). Created by `scripts/setup`. |
+| `context/*.md` | One always-loaded file per topic: short rules, or a stub with the topic's hard rules, a trigger, and a pointer to its body. Add a file, route to it from `AGENTS.md`. |
+| `context/ref/*.md` | Full topic bodies, read on demand when a stub's trigger fires. Not imported. |
+| `machines/<slug>/` | Per-machine context, loaded **only** on that machine via its agent profile: thin router + router-sized `context.md`, with full topic bodies in `ref/`. Created by `scripts/setup`. |
 | `secrets/secrets.yaml` | SOPS+age **encrypted** shared secrets (all identities), safe to commit. Read via `scripts/secret-get`. Created via `scripts/secret-edit`. |
 | `secrets/secrets.yaml.example` | Plaintext example showing the `key == $ENV_VAR` convention. |
 | `secrets/machines/<slug>.yaml` | A machine's private bundle, encrypted to the identities it opted into. Edit via `scripts/secret-edit --machine`. |
@@ -34,8 +36,9 @@ subsystems ship together:
 | `docs/key-stores.md` | Key-store options + cached-read / unlock-on-re-login behavior. |
 | `CLAUDE.md` | `@AGENTS.md` — so this repo works as a Claude project too. |
 
-To add a preference: drop it in the relevant `context/*.md` (or create a new topic
-file + add one `@` line to `AGENTS.md`), then commit and push so other machines stay
+To add a preference: drop it in the relevant `context/*.md` or `context/ref/*.md` (or
+create a new topic file + add one `@` line to `AGENTS.md`; long bodies go in
+`context/ref/` behind a stub), then commit and push so other machines stay
 in sync.
 
 ## Getting started
@@ -67,7 +70,7 @@ clone path):
 - **Codex** — `@<repo>/AGENTS.md` in `~/.codex/AGENTS.md`
 
 plus the per-machine router line `@<repo>/machines/<slug>/AGENTS.md`
-(the shared `AGENTS.md` is machine-agnostic). See `context/machines.md`,
+(the shared `AGENTS.md` is machine-agnostic). See `context/ref/machines.md`,
 `docs/secrets.md`, and `docs/key-stores.md`.
 
 ## Updating
