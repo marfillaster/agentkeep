@@ -9,6 +9,8 @@
 #                    (default: "<machine-slug>-file")
 #   AGE_CACHE        1 to enable the session cache (default: 0)
 #   AGE_CACHE_KEYCHAIN  dedicated cache keychain name (default: agentkeep)
+#   AGE_CACHE_TTL    seconds a cached bundle stays valid (default: 0 = no expiry;
+#                    86400 = one day). Expired entries are deleted on read.
 #
 # Each identity's backend/recipient is looked up in identities.yaml (the registry;
 # override path with $AGE_REGISTRY). Local key material is found by convention:
@@ -40,6 +42,7 @@ ac_load_config() {
   fi
   : "${AGE_CACHE:=0}"
   : "${AGE_CACHE_KEYCHAIN:=login}"   # default: login keychain (no separate passphrase)
+  : "${AGE_CACHE_TTL:=0}"            # seconds; 0 = cached bundles never expire
   : "${AGE_IDENTITIES:=$("$AC_REPO_ROOT/scripts/machine-id" 2>/dev/null)-file}"
 }
 
@@ -150,10 +153,30 @@ ac_cache_unlock() {
   fi
 }
 
+# Entries carry their creation time in the item comment ("agentkeep-cache ts=<epoch>").
+# With AGE_CACHE_TTL > 0, an entry older than the TTL (or with no timestamp) is
+# deleted and treated as a miss, so the next read goes back to the backend.
+ac_cache_fresh() {  # $1=account -> 0 if the entry is within AGE_CACHE_TTL
+  local acct="$1" kc ttl ts now
+  ttl="${AGE_CACHE_TTL:-0}"
+  case "$ttl" in ''|*[!0-9]*) ttl=0 ;; esac
+  [ "$ttl" -gt 0 ] || return 0
+  kc="$(ac_cache_kc)"
+  ts="$(security find-generic-password -s agentkeep-cache -a "$acct" "$kc" 2>/dev/null \
+        | sed -n 's/.*"icmt"<blob>="agentkeep-cache ts=\([0-9][0-9]*\)".*/\1/p')"
+  now="$(date +%s)"
+  if [ -n "$ts" ] && [ $((now - ts)) -lt "$ttl" ]; then
+    return 0
+  fi
+  security delete-generic-password -s agentkeep-cache -a "$acct" "$kc" >/dev/null 2>&1 || true
+  return 1
+}
+
 ac_cache_get() {  # $1=cipher file -> prints plaintext bundle on hit
   local file="$1" acct kc b64
   kc="$(ac_cache_kc)"
   acct="$(ac_sha256 < "$file")"
+  ac_cache_fresh "$acct" || return 1
   b64="$(security find-generic-password -s agentkeep-cache -a "$acct" -w "$kc" 2>/dev/null)" || return 1
   [ -n "$b64" ] || return 1
   printf '%s' "$b64" | base64 -d 2>/dev/null
@@ -164,7 +187,8 @@ ac_cache_put() {  # $1=cipher file ; stdin = plaintext bundle
   kc="$(ac_cache_kc)"
   acct="$(ac_sha256 < "$file")"
   b64="$(base64 | tr -d '\n')"
-  security add-generic-password -U -s agentkeep-cache -a "$acct" -w "$b64" "$kc" >/dev/null 2>&1 || true
+  security add-generic-password -U -s agentkeep-cache -a "$acct" -j "agentkeep-cache ts=$(date +%s)" \
+    -w "$b64" "$kc" >/dev/null 2>&1 || true
 }
 
 # Decrypt a secrets file, via cache when enabled, else the backend. Prints
