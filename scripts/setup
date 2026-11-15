@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Idempotent machine onboarding for agentkeep.
 #
-# Two axes (see identities.yaml + context/machines.md):
+# Two axes (see identities.yaml + context/ref/machines.md):
 #   - machine (context): slug, machines/<slug>/ dir, agent-profile wiring
 #   - identity (secrets): a named age key this machine uses to decrypt/encrypt
 #
@@ -294,17 +294,20 @@ else
     cat > "$mdir/AGENTS.md" <<EOF
 # Machine: $slug
 
-Thin router for context that should load **only on $slug**. Wired in via this
+Thin router for context that loads **only on $slug**, wired in via this
 machine's agent profile (see [[machines]]), not from the top-level \`AGENTS.md\`.
-Add a topic file beside this one and route to it below.
+\`context.md\` stays router-sized: hard rules plus a trigger and pointer per
+topic, with full bodies in \`ref/<topic>.md\` read on demand.
 
 @context.md
 EOF
     cat > "$mdir/context.md" <<EOF
 # $slug — context
 
-Context specific to $slug (paths, tooling quirks, local services). Loaded only on
-this machine.
+Context specific to $slug (paths, tooling quirks, local services), loaded only on
+this machine. Keep it router-sized: per topic, the hard rules, a specific trigger,
+and a backticked pointer to the full body in \`machines/$slug/ref/<topic>.md\`
+(relative to this repo's root).
 EOF
   fi
   ok "created machines/$slug/{AGENTS.md,context.md}"
