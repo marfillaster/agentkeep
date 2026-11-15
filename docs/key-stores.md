@@ -56,6 +56,13 @@ and isn't auto-unlocked, so the first read after re-login prompts for its passph
 — an explicit "unlock on re-login" gate. More secure, but a passphrase you must
 remember.
 
+**Expiry** (`AGE_CACHE_TTL=<seconds>`, default `0` = never). Each cache entry
+records when it was written; once it is older than the TTL it is deleted and the
+next read goes back to the hardware backend (one touch / Touch ID), which writes a
+fresh entry. `AGE_CACHE_TTL=86400` caches for a day. Entries for ciphertext that
+has since changed are never read again, so they are not expired by this; clear
+them with `security delete-generic-password -s agentkeep-cache` if needed.
+
 Trade-off either way: the cache holds **plaintext** at the keychain's trust level,
 and once populated, reads don't re-hit the hardware until the ciphertext changes.
 It's **off by default** and opt-in. macOS only.

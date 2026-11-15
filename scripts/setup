@@ -529,6 +529,9 @@ else
     if [ "${AGE_CACHE:-0}" = 1 ]; then
       printf 'AGE_CACHE=1\n'
       printf 'AGE_CACHE_KEYCHAIN=%s\n' "${AGE_CACHE_KEYCHAIN:-agentkeep}"
+      if [ "${AGE_CACHE_TTL:-0}" != 0 ]; then
+        printf 'AGE_CACHE_TTL=%s\n' "$AGE_CACHE_TTL"
+      fi
     fi
   )"
   if [ "$DRY" = 1 ]; then todo "write .machine.env (AGE_IDENTITIES=\"$idlist\", cache=${AGE_CACHE:-0})"
