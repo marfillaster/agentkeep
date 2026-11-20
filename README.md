@@ -1,8 +1,8 @@
 # agentkeep
 
-Portable, shared context for coding agents (Claude Code, Codex, and others) across
-all your machines. [`AGENTS.md`](./AGENTS.md) is the single source of truth; each
-agent's profile imports it instead of holding its own copy.
+Portable, shared context for coding agents (Claude Code, Codex, Antigravity, and
+others) across all your machines. [`AGENTS.md`](./AGENTS.md) is the single source
+of truth; each agent's profile imports it instead of holding its own copy.
 
 It's a **template** — clone it, run `scripts/setup`, and make it yours. Two
 subsystems ship together:
@@ -58,19 +58,23 @@ cd <your-repo> && scripts/setup          # add --store/--cache as desired
 
 `scripts/setup` is idempotent — it seeds the machine slug, provisions the key
 store, ensures the recipient/cache, creates `machines/<slug>/`, and wires the
-agent profiles (`~/CLAUDE.md`, `~/.codex/AGENTS.md`), ingesting any inline content
-already there. The import paths it writes are derived from wherever you cloned the
-repo, so there's no fixed location assumption. Re-run it any time. Preview with
-`scripts/setup --dry-run`.
+agent profiles (`~/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/AGENTS.md`),
+ingesting any inline content already there. The import paths it writes are derived
+from wherever you cloned the repo, so there's no fixed location assumption. Re-run
+it any time. Preview with `scripts/setup --dry-run`.
 
 Doing it by hand instead, point each agent's profile at the repo (`<repo>` is your
 clone path):
 
-- **Claude Code** — `@<repo>/AGENTS.md` in `~/CLAUDE.md`
-- **Codex** — `@<repo>/AGENTS.md` in `~/.codex/AGENTS.md`
+- **Claude Code** — `@<repo>/AGENTS.md` and `@<repo>/machines/<slug>/AGENTS.md` in
+  `~/CLAUDE.md`
+- **Codex** — the same two lines in `~/.codex/AGENTS.md`
+- **Antigravity (`agy`)** — `@[agentkeep](<repo>/AGENTS.md)` and
+  `@[agentkeep-machine](<repo>/machines/<slug>/context.md)` in `~/.gemini/AGENTS.md`
+  (Antigravity's `@[label](path)` inlines one level deep, so the machine entry
+  targets `context.md` directly)
 
-plus the per-machine router line `@<repo>/machines/<slug>/AGENTS.md`
-(the shared `AGENTS.md` is machine-agnostic). See `context/ref/machines.md`,
+(The shared `AGENTS.md` is machine-agnostic.) See `context/ref/machines.md`,
 `docs/secrets.md`, and `docs/key-stores.md`.
 
 ## Updating

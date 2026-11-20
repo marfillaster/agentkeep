@@ -24,10 +24,15 @@ lives under `machines/<slug>/` and is loaded only on that machine.
   this repo is cloned (`<repo>` below), so there's no fixed location assumption:
   - Claude Code — `@<repo>/machines/<slug>/AGENTS.md` in `~/CLAUDE.md`
   - Codex — the same line in `~/.codex/AGENTS.md`
+  - Antigravity (`agy`) — `@[agentkeep-machine](<repo>/machines/<slug>/context.md)`
+    in `~/.gemini/AGENTS.md` (Antigravity's `@[label](path)` inlines one level deep,
+    so it targets `context.md` directly rather than the thin router)
 - **Onboarding — run `scripts/setup`** (idempotent). It seeds `.machine`, creates
   `machines/<slug>/` (router + `context.md`), **ingests** any inline content already
-  in `~/CLAUDE.md` / `~/.codex/AGENTS.md` into `machines/<slug>/context.md` (backing
-  up the profile), and ensures both `@`-imports are present. It also sets up the key
+  in `~/CLAUDE.md` / `~/.codex/AGENTS.md` / `~/.gemini/AGENTS.md` into
+  `machines/<slug>/context.md` (backing up the profile), and ensures both imports
+  are present (creating `~/.gemini/AGENTS.md` automatically when Antigravity is
+  installed). It also sets up the key
   store ([secrets](secrets.md), `docs/key-stores.md`). Re-running is safe. Then commit & push
   the repo changes (per [meta](../meta.md)); the profiles live outside the repo.
 
