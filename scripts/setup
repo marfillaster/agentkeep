@@ -320,17 +320,34 @@ step "Agent profiles"
 # same profile content is visible in app settings and in agent startup context.
 shared_import="@$repo_root/AGENTS.md"
 machine_import="@$repo_root/machines/$slug/AGENTS.md"
+# Antigravity (@[label](path)) inlines one level deep (bare @path is not inlined),
+# so point the machine entry straight at context.md instead of the thin router.
+agy_shared_import="@[agentkeep]($repo_root/AGENTS.md)"
+agy_machine_import="@[agentkeep-machine]($repo_root/machines/$slug/context.md)"
 ctx="$mdir/context.md"
 write_profile_imports() {
-  local profile="$1" others="$2"
+  local profile="$1" others="$2" s_imp="$3" m_imp="$4"
   {
     [ -z "$others" ] || printf '%s\n' "$others"
-    printf '%s\n%s\n' "$shared_import" "$machine_import"
+    printf '%s\n%s\n' "$s_imp" "$m_imp"
   } > "$profile"
 }
 rewire_profile() {
-  local profile="$1" label="$2"
-  [ -e "$profile" ] || { todo "$label not found ($profile) — skipping"; return; }
+  local profile="$1" label="$2" s_imp="${3:-$shared_import}" m_imp="${4:-$machine_import}" create="${5:-0}"
+  if [ ! -e "$profile" ]; then
+    if [ "$create" = 1 ]; then
+      if [ "$DRY" = 1 ]; then
+        todo "$label: would create and wire agentkeep imports"
+      else
+        mkdir -p "$(dirname "$profile")"
+        write_profile_imports "$profile" "" "$s_imp" "$m_imp"
+        ok "$label: created and wired"
+      fi
+    else
+      todo "$label not found ($profile) — skipping"
+    fi
+    return
+  fi
   local others
   others="$(grep -vE '^[[:space:]]*@.*agentkeep' "$profile" | sed '/^[[:space:]]*$/d' || true)"
   if [ -n "$others" ] && [ "$opt_ingest" = 1 ]; then
@@ -343,20 +360,20 @@ rewire_profile() {
       { printf '\n## Ingested from %s (%s)\n%s\n\n' "$label" "$(date +%F)" "$marker"
         printf '%s\n' "$others"; } >> "$ctx"
       cp "$profile" "$profile.bak"
-      write_profile_imports "$profile" ""
+      write_profile_imports "$profile" "" "$s_imp" "$m_imp"
       ok "$label: ingested -> machines/$slug/context.md ; rewired (backup $profile.bak)"
     fi
   else
     local wanted current
-    wanted="$(printf '%s\n%s\n' "$shared_import" "$machine_import")"
+    wanted="$(printf '%s\n%s\n' "$s_imp" "$m_imp")"
     current="$(grep -E '^[[:space:]]*@.*agentkeep' "$profile" | sed '/^[[:space:]]*$/d' || true)"
     if [ "$current" != "$wanted" ]; then
       if [ "$DRY" = 1 ]; then
         todo "$label: would normalize agentkeep imports"
       else
-        write_profile_imports "$profile" "$others"
+        write_profile_imports "$profile" "$others" "$s_imp" "$m_imp"
+        ok "$label: imports ensured"
       fi
-      ok "$label: imports ensured"
     else
       ok "$label: already wired"
     fi
@@ -366,6 +383,12 @@ rewire_profile() {
 rewire_profile "$HOME/CLAUDE.md" "~/CLAUDE.md"
 # shellcheck disable=SC2088
 rewire_profile "$HOME/.codex/AGENTS.md" "~/.codex/AGENTS.md"
+agy_present=0
+if have agy || [ -d "$HOME/.gemini/config" ] || [ -d "$HOME/.gemini/antigravity-cli" ] || [ -d "$HOME/.gemini/antigravity" ]; then
+  agy_present=1
+fi
+# shellcheck disable=SC2088
+rewire_profile "$HOME/.gemini/AGENTS.md" "~/.gemini/AGENTS.md" "$agy_shared_import" "$agy_machine_import" "$agy_present"
 
 # --- 5. identity (key store) --------------------------------------------------
 step "Identity"
